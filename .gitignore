@@ -1,0 +1,5 @@
+*.pt
+*.pkl
+*.zip
+__pycache__/
+*.pdf
