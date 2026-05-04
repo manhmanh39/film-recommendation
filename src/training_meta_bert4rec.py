@@ -23,16 +23,16 @@ val_iter = 1
 mask_rate = 0.2
 max_len = 200
 min_len = 5
-d_model = 64
+d_model = 128
 n_heads = 4
 n_layers = 4
 dropout = 0.2
-lr = 1e-4
+lr = 5e-5
 top_k = 200
 
 model_name = "metabert4rec"
 
-base_dir = ""
+base_dir = "../data"
 experiment_dir = f"{model_name}_{d_model}"
 if not os.path.isdir(os.path.join(base_dir, experiment_dir)):
     os.mkdir(os.path.join(base_dir, experiment_dir))
@@ -331,7 +331,7 @@ def train_one_epoch(model, batch, accumulation_steps):
 
 
 # == Early Stopping Variables == #
-patience = 3
+patience = 7
 best_ndcg = 0.0 if checkpoint is None else checkpoint.get("ndcg", 0.0)
 counter = 0 if checkpoint is None else checkpoint.get("es_counter", 0)  # resume đúng counter
 early_stop = False
