@@ -19,6 +19,7 @@ experiment_dir = f"../data/sasrec_ce_{d_model}"
 os.makedirs(experiment_dir, exist_ok=True)
 checkpoint_path = os.path.join(experiment_dir, "checkpoint.pt")
 losses_path = os.path.join(experiment_dir, "losses.csv")
+validation_metrics_path = os.path.join(experiment_dir, "validation_metrics.csv")
 
 # 2. DataLoaders
 train_loader, val_loader, vocab_size = prepare_dataloaders(
@@ -53,7 +54,14 @@ for epoch in range(start_epoch, num_epochs + 1):
     pd.DataFrame([{"epoch": epoch, "loss": avg_loss}]).to_csv(losses_path, mode='a', header=not os.path.exists(losses_path), index=False)
     
     if epoch % val_iter == 0:
-        ndcg = validate_epoch(model, val_loader, "Validation", device, is_meta=False)
+        metrics, ndcg = validate_epoch(model, val_loader, "Validation", device, is_meta=False)
+        row = {"epoch": epoch, **metrics}
+        pd.DataFrame([row]).to_csv(
+            validation_metrics_path, 
+            mode='a', 
+            header=not os.path.exists(validation_metrics_path), 
+            index=False
+        )
         print(f"🏆 Epoch {epoch} | Avg NDCG@10: {ndcg:.4f}")
         
         if ndcg > best_ndcg:

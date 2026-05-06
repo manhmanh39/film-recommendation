@@ -3,5 +3,5 @@
 *.zip
 __pycache__/
 *.pdf
-data/
+data/ml-32m
 *.pkl

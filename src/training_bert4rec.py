@@ -9,16 +9,19 @@ from utils import prepare_dataloaders, train_epoch, validate_epoch, init_weights
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# 1. Configs
-d_model = 128
-batch_size, val_batch_size = 128, 32
+# 1. Configs tối ưu theo chuẩn bài báo
+d_model = 64
+n_heads = 2
+n_layers = 2
+batch_size, val_batch_size = 32, 256
 num_epochs, val_iter, patience = 50, 1, 5
-accum_steps = 4
+accum_steps = 8
 
-experiment_dir = f"../data/bert4rec_{d_model}"
+experiment_dir = f"../data/bert4rec_{d_model}_optimized"
 os.makedirs(experiment_dir, exist_ok=True)
 checkpoint_path = os.path.join(experiment_dir, "checkpoint.pt")
 losses_path = os.path.join(experiment_dir, "losses.csv")
+validation_metrics_path = os.path.join(experiment_dir, "validation_metrics.csv")
 
 # 2. DataLoaders
 train_loader, val_loader, vocab_size = prepare_dataloaders(
@@ -27,11 +30,11 @@ train_loader, val_loader, vocab_size = prepare_dataloaders(
 )
 
 # 3. Initialize
-model = BERT4Rec(max_len=200, d_model=d_model, n_heads=4, n_layers=4, vocab_size=vocab_size).to(device)
+model = BERT4Rec(max_len=200, d_model=d_model, n_heads=n_heads, n_layers=n_layers, vocab_size=vocab_size).to(device)
 model.apply(init_weights)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
 scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs)
 scaler = torch.amp.GradScaler('cuda')
 
@@ -52,8 +55,15 @@ for epoch in range(start_epoch, num_epochs + 1):
     pd.DataFrame([{"epoch": epoch, "loss": avg_loss}]).to_csv(losses_path, mode='a', header=not os.path.exists(losses_path), index=False)
     
     if epoch % val_iter == 0:
-        ndcg = validate_epoch(model, val_loader, "Validation", device, is_meta=False)
-        print(f"🏆 Epoch {epoch} | Avg NDCG@10: {ndcg:.4f}")
+        metrics, ndcg = validate_epoch(model, val_loader, "Validation", device, is_meta=False)
+        row = {"epoch": epoch, **metrics}
+        pd.DataFrame([row]).to_csv(
+            validation_metrics_path, 
+            mode='a', 
+            header=not os.path.exists(validation_metrics_path), 
+            index=False
+        )
+        print(f"🏆 Epoch {epoch} | Loss: {avg_loss:.4f} | Avg NDCG@10: {ndcg:.4f}")
         
         if ndcg > best_ndcg:
             best_ndcg, es_counter = ndcg, 0

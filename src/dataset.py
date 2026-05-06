@@ -101,14 +101,22 @@ class MovieLenDataset(Dataset):
             return
 
         if self.negative_rule == "popularity":
-            movies_by_popularity = (
-                self.ratings["movie_idx"].value_counts().index
-            )
-            for i in tqdm(range(len(self.seqs))):
+            # ✅ SỬA Ở ĐÂY: Lấy cả index (movie_idx) và values (tần suất) để làm weights
+            movie_counts = self.ratings["movie_idx"].value_counts()
+            
+            for i in tqdm(range(len(self.seqs)), desc="Negative Sampling (Popularity)"):
                 seq = self.seqs[i]["seq"]
-                sample = movies_by_popularity[~movies_by_popularity.isin(seq)][
-                    : self.top_k
-                ].to_list()
+                
+                # Lọc ra những phim user CHƯA xem trong chuỗi hiện tại
+                valid_movies = movie_counts[~movie_counts.index.isin(seq)]
+                
+                # Lấy mẫu ngẫu nhiên 100 phim, xác suất rớt vào tỷ lệ thuận với độ phổ biến (weights)
+                sample = valid_movies.sample(
+                    n=self.top_k, 
+                    weights=valid_movies.values, 
+                    replace=False
+                ).index.to_list()
+                
                 self.negative_samples.append(sample)
         elif self.negative_rule == "trending":
             movies_by_trending = (

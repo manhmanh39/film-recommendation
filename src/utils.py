@@ -20,16 +20,13 @@ def init_weights(module):
 def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=32, val_batch_size=16):
     cache_file = os.path.join(data_dir, "dataset_clean_cache.pkl")
     
-    # Trỏ thẳng vào cái folder ml-32m bạn vừa tạo
     extracted_path = os.path.join(data_dir, "ml-32m")
     movies_path = os.path.join(extracted_path, "movies.csv")
     ratings_path = os.path.join(extracted_path, "ratings.csv")
     
-    # Kiểm tra xem bạn để file đúng chỗ chưa
     if not os.path.exists(movies_path) or not os.path.exists(ratings_path):
-        raise FileNotFoundError(f"❌ Không tìm thấy dữ liệu tại {extracted_path}. Hải kiểm tra lại xem folder 'ml-32m' đã nằm trong thư mục 'data' chưa nhé!")
+        raise FileNotFoundError(f"❌ Không tìm thấy dữ liệu tại {extracted_path}.")
 
-    # 2. Xử lý Cache (Bỏ luôn phần tải file zip)
     if os.path.exists(cache_file):
         print("📦 Đang nạp Dataset SẠCH từ Cache...")
         with open(cache_file, "rb") as f:
@@ -39,7 +36,6 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
         movies = pd.read_csv(movies_path)
         ratings = pd.read_csv(ratings_path)
         
-        # Trích xuất Year
         def extract_year(title):
             match = re.search(r'\((\d{4})\)', str(title))
             return int(match.group(1)) if match else 2000
@@ -50,25 +46,25 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
         ratings = ratings[ratings['movieId'].isin(movie_counts[movie_counts >= 50].index)]
         user_std = ratings.groupby('userId')['rating'].std()
         ratings = ratings[ratings['userId'].isin(user_std[user_std > 0].index)]
-        ratings = ratings[ratings['rating'] >= 4.0]
         
+        # Bỏ bộ lọc rating >= 4.0 để giữ nguyên chuỗi hành vi thời gian
         vocab_size = len(movies) + 2
         
         print("⏳ Đang xây dựng Dataset (chỉ chạy 1 lần duy nhất)...")
-        train_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=200, split="train")
-        val_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=200, split="val")
+        # Hạ strides xuống 50 để tạo thêm dữ liệu huấn luyện
+        train_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=50, split="train")
+        val_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=50, split="val")
         
         with open(cache_file, "wb") as f:
             pickle.dump((train_ds, val_ds, vocab_size), f)
             
-    # 3. Khởi tạo DataLoaders
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=val_batch_size, shuffle=False, num_workers=2)
     
     return train_loader, val_loader, vocab_size
 
+
 def train_epoch(model, loader, criterion, optimizer, scaler, accum_steps, device, is_meta=False):
-    """Vòng lặp huấn luyện tối ưu với Mixed Precision."""
     model.train()
     epoch_loss = 0.0
     pbar = tqdm(loader, desc="🔥 Training")
@@ -90,7 +86,6 @@ def train_epoch(model, loader, criterion, optimizer, scaler, accum_steps, device
             if flatten_mask.sum() == 0: 
                 continue
             
-            # Mô hình trả về [B, T, Vocab] khi model.training = True
             V = logits.shape[-1]
             y_pred = logits.view(-1, V)[flatten_mask]
             y_true = torch.flatten(label)[flatten_mask]
@@ -109,38 +104,46 @@ def train_epoch(model, loader, criterion, optimizer, scaler, accum_steps, device
         
     return epoch_loss / len(loader)
 
-def validate_epoch(model, loader, val_type, device, is_meta=False):
-    """Vòng lặp Full Ranking Validation, chống OOM."""
+
+def validate_epoch(model, loader, val_type, device, is_meta=False, K_list=[1, 5, 10, 20]):
     model.eval()
-    metrics = {"NDCG@5": 0.0, "NDCG@10": 0.0, "Recall@5": 0.0, "Recall@10": 0.0}
-    total_samples = 0
     
+    metrics = {f"Recall@{K}": 0.0 for K in K_list}
+    metrics.update({f"NDCG@{K}": 0.0 for K in K_list})
+    metrics.update({f"MRR@{K}": 0.0 for K in K_list})
+    metrics["MRR"] = 0.0
+    
+    total_samples = 0
     with torch.no_grad():
         for batch in tqdm(loader, desc=f"🔎 Validation [{val_type}]"):
             idx = batch["input"].to(device)
             key_padding_mask = batch["key_padding_mask"].to(device)
-            target_items = batch["label"][:, -1].to(device)
+            
+            # Lấy 101 candidates từ dataset
+            candidates = batch["candidates"].to(device)
             
             with torch.amp.autocast('cuda'):
                 if is_meta:
                     genres = batch["genres"].to(device)
-                    logits = model(idx, genres, key_padding_mask=key_padding_mask, candidates=None)
+                    # Ép model chỉ sinh logits cho 101 candidates này
+                    logits = model(idx, genres, key_padding_mask=key_padding_mask, candidates=candidates)
                 else:
-                    logits = model(idx, key_padding_mask=key_padding_mask, candidates=None)
+                    logits = model(idx, key_padding_mask=key_padding_mask, candidates=candidates)
                     
-            # Mô hình trả về [B, Vocab] khi model.training = False
-            target_scores = logits.gather(1, target_items.unsqueeze(1))
+            # Target (item thật) nằm ở vị trí cuối cùng trong mảng candidates
+            target_scores = logits[:, -1].unsqueeze(1)
             ranks = (logits > target_scores).sum(dim=1) + 1
-            
-            for K in [5, 10]:
+
+            for K in K_list:
                 hit = (ranks <= K).float()
                 metrics[f"Recall@{K}"] += hit.sum().item()
                 metrics[f"NDCG@{K}"] += (hit / torch.log2(ranks.float() + 1)).sum().item()
-                
+                metrics[f"MRR@{K}"] += (hit / ranks.float()).sum().item()
+            
+            metrics["MRR"] += (1.0 / ranks.float()).sum().item()
             total_samples += idx.size(0)
             
     for k in metrics:
         metrics[k] /= total_samples
         
-    print(f"📊 {val_type} | NDCG@10: {metrics['NDCG@10']:.4f} | Recall@10: {metrics['Recall@10']:.4f}")
-    return metrics["NDCG@10"]
+    return metrics, metrics.get("NDCG@10", 0.0)
