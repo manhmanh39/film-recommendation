@@ -12,10 +12,11 @@ WEEK_IN_SEC = 604800
 DAY_IN_SEC = 86400
 
 GENRES = [
+    "(no genres listed)", 
     "Action",
     "Adventure",
     "Animation",
-    "Children's",
+    "Children",      
     "Comedy",
     "Crime",
     "Documentary",
@@ -23,6 +24,7 @@ GENRES = [
     "Fantasy",
     "Film-Noir",
     "Horror",
+    "IMAX",          
     "Musical",
     "Mystery",
     "Romance",
@@ -209,6 +211,7 @@ class MovieLenDataset(Dataset):
             padded_token_mask = F.pad(token_mask, pad, value=False)
             label = padded_seq.clone()
             padded_seq[padded_token_mask] = self.MASK_ID
+            padded_genres[padded_token_mask] = 0
 
             return {
                 "input": padded_seq,
@@ -217,6 +220,7 @@ class MovieLenDataset(Dataset):
                 "token_mask": padded_token_mask,
                 "key_padding_mask": key_padding_mask,
             }
+            
         elif self.split == "val" or self.split == "test":
             negatives = torch.tensor(self.negative_samples[idx])
             negatives_pad = (max(0, self.top_k - len(negatives)), 0)
@@ -224,8 +228,10 @@ class MovieLenDataset(Dataset):
             token_mask = torch.tensor([False] * (len(seq) - 1) + [True])
             padded_token_mask = F.pad(token_mask, pad, value=False)
             label = padded_seq.clone()
+
             padded_seq[padded_token_mask] = self.MASK_ID
             target = seq[-1]
+            padded_genres[padded_token_mask] = 0
 
             return {
                 "input": padded_seq,
@@ -237,71 +243,3 @@ class MovieLenDataset(Dataset):
                     (padded_negatives, target.unsqueeze(0))
                 ),
             }
-
-
-# if __name__ == "__main__":
-#     ds_url = "https://files.grouplens.org/datasets/movielens/ml-20m.zip"
-#     temp_dir = "/tmp"
-
-#     subprocess.run(["wget", "-P", temp_dir, ds_url])
-
-#     with ZipFile(os.path.join(temp_dir, "ml-20m.zip")) as z_obj:
-#         z_obj.extractall(path=temp_dir)
-
-#     movies_path = os.path.join(temp_dir, "ml-20m", "movies.csv")
-#     ratings_path = os.path.join(temp_dir, "ml-20m", "ratings.csv")
-#     tags_path = os.path.join(temp_dir, "ml-20m", "tags.csv")
-#     links_path = os.path.join(temp_dir, "ml-20m", "links.csv")
-#     genome_tags_path = os.path.join(temp_dir, "ml-20m", "genome-tags.csv")
-#     genome_scores_path = os.path.join(temp_dir, "ml-20m", "genome-scores.csv")
-
-#     movies = pd.read_csv(movies_path)
-#     ratings = pd.read_csv(ratings_path)
-#     tags = pd.read_csv(tags_path)
-#     links = pd.read_csv(links_path)
-#     genome_tags = pd.read_csv(genome_tags_path)
-#     genome_scores = pd.read_csv(genome_scores_path)
-
-#     dss = {}
-
-#     dss["train"] = MovieLenDataset(
-#         movies=movies,
-#         ratings=ratings,
-#         max_len=200,
-#         split="train",
-#     )
-
-#     s = dss["train"][2]
-#     print(s["input"].shape)
-#     print(s["input"])
-#     print(s["token_mask"].shape)
-#     print(s["token_mask"])
-#     print(s["key_padding_mask"].shape)
-#     print(s["key_padding_mask"])
-#     print(s["genres"].shape)
-#     print(s["genres"])
-
-#     s["input"].to("cuda")
-
-#     for rule in ["trending"]:
-#         print("==========================================")
-#         dss[rule] = MovieLenDataset(
-#             movies=movies,
-#             ratings=ratings,
-#             max_len=200,
-#             split="test",
-#             negative_rule=rule,
-#         )
-#         s = dss[rule][0]
-#         print(s["input"].shape)
-#         print(s["input"])
-#         print(s["target"].shape)
-#         print(s["target"])
-#         print(s["token_mask"].shape)
-#         print(s["token_mask"])
-#         print(s["key_padding_mask"].shape)
-#         print(s["key_padding_mask"])
-#         print(s["genres"].shape)
-#         print(s["genres"])
-#         print(s["candidates"].shape)
-#         print(s["candidates"])

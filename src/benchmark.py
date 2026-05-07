@@ -36,7 +36,7 @@ models_to_test = [
         "name": "MetaBERT4Rec",
         "path": f"../data/metabert4rec_{d_model}/best_model.pt",
         "is_meta": True,
-        "instance": MetaBERT4Rec(max_len, 18, d_model, 4, 4, vocab_size).to(device)
+        "instance": MetaBERT4Rec(max_len, 20, d_model, 4, 4, vocab_size).to(device)
     }
 ]
 
