@@ -34,7 +34,7 @@ model = MetaBERT4Rec(max_len=200, num_genres=20, d_model=d_model, n_heads=n_head
 model.apply(init_weights)
 
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01) # Thêm weight decay
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01) # Thêm weight decay
 scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs)
 scaler = torch.amp.GradScaler('cuda')
 
