@@ -1,7 +1,8 @@
+**/checkpoint.pt
 *.pt
+!**/best_model.pt
 *.pkl
 *.zip
 __pycache__/
 *.pdf
 data/ml-32m
-*.pkl
