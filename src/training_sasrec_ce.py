@@ -17,7 +17,7 @@ batch_size, val_batch_size = 32, 256
 num_epochs, val_iter, patience = 50, 1, 5
 accum_steps = 8
 
-experiment_dir = f"../data/sasrec_ce_{d_model}_optimized"
+experiment_dir = f"../data/sasrec_ce_{d_model}_timesplit"
 os.makedirs(experiment_dir, exist_ok=True)
 checkpoint_path = os.path.join(experiment_dir, "checkpoint.pt")
 losses_path = os.path.join(experiment_dir, "losses.csv")

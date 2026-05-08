@@ -18,7 +18,8 @@ def init_weights(module):
             nn.init.zeros_(module.bias)
 
 def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=32, val_batch_size=16):
-    cache_file = os.path.join(data_dir, "dataset_clean_cache.pkl")
+    # ĐỔI TÊN CACHE ĐỂ KHÔNG DÙNG LẠI DATA CŨ
+    cache_file = os.path.join(data_dir, "dataset_timesplit_cache.pkl") 
     
     extracted_path = os.path.join(data_dir, "ml-32m")
     movies_path = os.path.join(extracted_path, "movies.csv")
@@ -28,11 +29,11 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
         raise FileNotFoundError(f"❌ Không tìm thấy dữ liệu tại {extracted_path}.")
 
     if os.path.exists(cache_file):
-        print("📦 Đang nạp Dataset SẠCH từ Cache...")
+        print("📦 Đang nạp Dataset SẠCH (Time-Split) từ Cache...")
         with open(cache_file, "rb") as f:
             train_ds, val_ds, vocab_size = pickle.load(f)
     else:
-        print("🧹 Đang thanh lọc dữ liệu (Cleaning Dataset)...")
+        print("🧹 Đang thanh lọc và CẮT DỮ LIỆU THEO THỜI GIAN...")
         movies = pd.read_csv(movies_path)
         ratings = pd.read_csv(ratings_path)
         
@@ -41,19 +42,28 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
             return int(match.group(1)) if match else 2000
         movies['year'] = movies['title'].apply(extract_year)
         
-        # Lọc nhiễu
+        # 1. Lọc nhiễu cơ bản
         movie_counts = ratings['movieId'].value_counts()
         ratings = ratings[ratings['movieId'].isin(movie_counts[movie_counts >= 50].index)]
         user_std = ratings.groupby('userId')['rating'].std()
         ratings = ratings[ratings['userId'].isin(user_std[user_std > 0].index)]
         
-        # Bỏ bộ lọc rating >= 4.0 để giữ nguyên chuỗi hành vi thời gian
+        # 2. CHIA TÁCH DỮ LIỆU THEO THỜI GIAN (01/01/2021)
+        SPLIT_DATE = 1609459200
+        train_ratings = ratings[ratings['timestamp'] < SPLIT_DATE]
+        test_ratings = ratings[ratings['timestamp'] >= SPLIT_DATE]
+        
+        # Lưu tập Test ra file riêng để chạy Simulation A/B Test chiều nay
+        test_ratings_path = os.path.join(data_dir, "test_ratings_ab.csv")
+        test_ratings.to_csv(test_ratings_path, index=False)
+        print(f"✅ Đã lưu tập Simulation (Tương lai): {len(test_ratings)} dòng ra {test_ratings_path}")
+        
         vocab_size = len(movies) + 2
         
-        print("⏳ Đang xây dựng Dataset (chỉ chạy 1 lần duy nhất)...")
-        # Hạ strides xuống 50 để tạo thêm dữ liệu huấn luyện
-        train_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=50, split="train")
-        val_ds = MovieLenDataset(movies=movies, ratings=ratings, max_len=max_len, min_len=min_len, strides=50, split="val")
+        print(f"⏳ Đang xây dựng Dataset trên tập Train/Val trong quá khứ ({len(train_ratings)} dòng)...")
+        # CHỈ TRUYỀN `train_ratings` VÀO ĐỂ TRAIN
+        train_ds = MovieLenDataset(movies=movies, ratings=train_ratings, max_len=max_len, min_len=min_len, strides=50, split="train")
+        val_ds = MovieLenDataset(movies=movies, ratings=train_ratings, max_len=max_len, min_len=min_len, strides=50, split="val")
         
         with open(cache_file, "wb") as f:
             pickle.dump((train_ds, val_ds, vocab_size), f)
@@ -62,7 +72,6 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
     val_loader = DataLoader(val_ds, batch_size=val_batch_size, shuffle=False, num_workers=2)
     
     return train_loader, val_loader, vocab_size
-
 
 def train_epoch(model, loader, criterion, optimizer, scaler, accum_steps, device, is_meta=False):
     model.train()
