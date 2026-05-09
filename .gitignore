@@ -2,7 +2,7 @@
 *.pt
 !**/best_model.pt
 *.pkl
-*.zip
+# *.zip
 __pycache__/
-*.pdf
+# *.pdf
 data/ml-32m
