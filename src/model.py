@@ -166,3 +166,112 @@ class MetaBERT4Rec(nn.Module):
             
         z = F.gelu(self.proj(h_p))
         return torch.matmul(z, self.id_emb.tok_embedding.weight.T) + self.bias
+    
+class SASRecF(nn.Module):
+    """
+    SASRec tích hợp Early Fusion (Feature-Rich SASRec)
+    Giải quyết Item Cold-Start bằng cách cộng gộp Genre Vector vào ID Embedding ngay từ đầu.
+    """
+    def __init__(self, max_len, num_genres, d_model, n_heads, n_layers, vocab_size, dropout=0.1):
+        super().__init__()
+        # Sử dụng Meta Embedding (cộng ID + Position + Genre)
+        self.embedding = MetaBERT4RecEmbedding(d_model, max_len, vocab_size, num_genres, dropout)
+        
+        # Giữ nguyên kiến trúc Transformer 1 chiều của SASRec gốc
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, n_heads, d_model*4, dropout, batch_first=True, activation='gelu')
+            for _ in range(n_layers)
+        ])
+        self.ln = nn.LayerNorm(d_model)
+        self.output = nn.Linear(d_model, vocab_size)
+
+    def forward(self, idx, genres, key_padding_mask=None, candidates=None):
+        T = idx.shape[1]
+        
+        # Early Fusion: Truyền cả idx và genres vào tầng Embedding
+        x = self.embedding(idx, genres)
+        
+        # Causal Mask: Chỉ cho phép nhìn về quá khứ (Left-to-Right)
+        mask = torch.triu(torch.ones(T, T, device=idx.device), diagonal=1).bool()
+        
+        for layer in self.layers:
+            x = layer(x, src_mask=mask, src_key_padding_mask=key_padding_mask)
+        x = self.ln(x)
+        
+        # Xử lý trả về theo Phase (Train vs Eval)
+        if not self.training:
+            x_last = x[:, -1, :] 
+            if candidates is not None:
+                return torch.gather(self.output(x_last), dim=1, index=candidates)
+            return self.output(x_last) # Full Ranking
+            
+        return self.output(x) # Training (Full Sequence)
+    
+# ─── THÊM VÀO CUỐI FILE MODEL.PY ──────────────────────────────────────────
+
+class ConcatEmbedding(nn.Module):
+    def __init__(self, d_model, max_len, vocab_size, num_genres, dropout=0.1):
+        super().__init__()
+        self.tok_embedding = nn.Embedding(vocab_size, d_model, padding_idx=0)
+        self.pos_embedding = nn.Embedding(max_len, d_model)
+        self.genre_embedding = nn.Embedding(num_genres, d_model)
+        
+        # Hàm Linear để ép từ không gian 2*d_model về lại d_model
+        self.proj = nn.Linear(d_model * 2, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, idx, genres):
+        B, T = idx.shape
+        positions = torch.arange(T, device=idx.device).unsqueeze(0).expand(B, T)
+        
+        # 1. Luồng ID + Position
+        id_emb = self.tok_embedding(idx) + self.pos_embedding(positions)
+        
+        # 2. Luồng Genre
+        genre_emb = torch.matmul(genres.float(), self.genre_embedding.weight) 
+        
+        # 3. Phép Ghép (Concatenate): B x T x d_model  +  B x T x d_model  => B x T x 2*d_model
+        concat_emb = torch.cat([id_emb, genre_emb], dim=-1)
+        
+        # 4. Phóng chiếu (Project) về lại d_model
+        fused_emb = self.proj(concat_emb)
+        
+        return self.dropout(fused_emb)
+
+
+class SASRecF_Concat(nn.Module):
+    """
+    Phiên bản SASRec sử dụng Phép Ghép (Concatenation) cho Genre.
+    Dùng để so sánh trực tiếp (A/B Test) với phiên bản Phép Cộng (SASRecF).
+    """
+    def __init__(self, max_len, num_genres, d_model, n_heads, n_layers, vocab_size, dropout=0.1):
+        super().__init__()
+        # Sử dụng Concat Embedding
+        self.embedding = ConcatEmbedding(d_model, max_len, vocab_size, num_genres, dropout)
+        
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, n_heads, d_model*4, dropout, batch_first=True, activation='gelu')
+            for _ in range(n_layers)
+        ])
+        self.ln = nn.LayerNorm(d_model)
+        self.output = nn.Linear(d_model, vocab_size)
+
+    def forward(self, idx, genres, key_padding_mask=None, candidates=None):
+        T = idx.shape[1]
+        
+        # Dữ liệu đi qua mạng ghép
+        x = self.embedding(idx, genres)
+        
+        mask = torch.triu(torch.ones(T, T, device=idx.device), diagonal=1).bool()
+        
+        for layer in self.layers:
+            x = layer(x, src_mask=mask, src_key_padding_mask=key_padding_mask)
+        x = self.ln(x)
+        
+        if not self.training:
+            x_last = x[:, -1, :] 
+            if candidates is not None:
+                return torch.gather(self.output(x_last), dim=1, index=candidates)
+            return self.output(x_last) 
+            
+        return self.output(x)

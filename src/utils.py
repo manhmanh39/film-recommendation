@@ -36,6 +36,7 @@ def prepare_dataloaders(data_dir="../data", max_len=200, min_len=5, batch_size=3
         print("🧹 Đang thanh lọc và CẮT DỮ LIỆU THEO THỜI GIAN...")
         movies = pd.read_csv(movies_path)
         ratings = pd.read_csv(ratings_path)
+        # ratings = pd.read_csv(ratings_path).sample(frac=0.05, random_state=42)
         
         def extract_year(title):
             match = re.search(r'\((\d{4})\)', str(title))
