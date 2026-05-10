@@ -17,13 +17,24 @@ max_len = 200
 REVENUE_PER_HIT = 50000  # VND (Approx. $2 USD)
 data_dir = "../data"
 
-# ─── 2. DATA LOADING ────────────────────────────────────────────────────
-print("📦 Đang nạp Dataset Simulation từ file Cache...")
-# Lấy trực tiếp vocab_size từ utils để đồng bộ 100% với lúc train
-_, test_loader, vocab_size = prepare_dataloaders(
-    data_dir=data_dir, max_len=max_len, min_len=5, 
-    batch_size=128, val_batch_size=128
+# ─── 2. DATA LOADING & ID MAPPING ───────────────────────────────────────
+print("📦 Đang nạp Dataset Simulation (Tương lai) từ file CSV...")
+movies = pd.read_csv(os.path.join(data_dir, "ml-32m/movies.csv"))
+test_ratings = pd.read_csv(os.path.join(data_dir, "test_ratings_ab.csv"))
+vocab_size = len(movies) + 2
+
+# Khởi tạo Dataset chuẩn cho tập Test
+from dataset import MovieLenDataset
+from torch.utils.data import DataLoader
+
+test_ds = MovieLenDataset(
+    movies=movies, 
+    ratings=test_ratings, 
+    max_len=max_len, 
+    min_len=5, 
+    split="test"  # Bắt buộc để "test" để lấy đúng cách chia mảng
 )
+test_loader = DataLoader(test_ds, batch_size=128, shuffle=False)
 
 # ─── 3. INITIALIZING ALGORITHMS ─────────────────────────────────────────
 print("🤖 Loading Group B Model (Champion: SASRecF_Concat)...")
