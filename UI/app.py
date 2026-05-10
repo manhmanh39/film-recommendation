@@ -1,500 +1,342 @@
+import sys
+import os
 import streamlit as st
 import pandas as pd
 import database as db
 import requests
+import torch
+import numpy as np
 
 # ==========================================
-# [THÊM MỚI] HÀM LẤY ẢNH TỪ TMDB
+# AUTOMATIC PATH CONFIGURATION (ABSOLUTE PATHS)
+# ==========================================
+current_dir = os.path.dirname(os.path.abspath(__file__)) # Currently in UI directory
+parent_dir = os.path.dirname(current_dir) # Go back to root directory
+src_dir = os.path.join(parent_dir, 'src') # Enter src directory
+
+if src_dir not in sys.path:
+    sys.path.append(src_dir)
+
+from model import SASRecF_Concat 
+
+# Point accurately to the model file
+MODEL_PATH = os.path.join(parent_dir, "data", "sasrec_f_64_meta_timesplit", "best_model.pt") 
+
+# Point accurately to the data files
+MOVIES_PATH = os.path.join(parent_dir, "data", "ml-32m", "movies.csv")
+LINKS_PATH = os.path.join(parent_dir, "data", "ml-32m", "links.csv")
+
+# Hyperparameters
+D_MODEL = 64
+MAX_LEN = 200
+N_HEADS = 2
+N_LAYERS = 2
+VOCAB_SIZE = 87587
+NUM_GENRES = 20
+
+# List of 20 standard MovieLens genres
+ALL_GENRES = [
+    "Action", "Adventure", "Animation", "Children", "Comedy",
+    "Crime", "Documentary", "Drama", "Fantasy", "Film-Noir",
+    "Horror", "IMAX", "Musical", "Mystery", "Romance", 
+    "Sci-Fi", "Thriller", "War", "Western", "(no genres listed)"
+]
+
+@st.cache_resource(show_spinner="Initializing Artificial Intelligence...")
+def load_ml_model():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        model = SASRecF_Concat(
+            max_len=MAX_LEN, num_genres=NUM_GENRES, 
+            d_model=D_MODEL, n_heads=N_HEADS, 
+            n_layers=N_LAYERS, vocab_size=VOCAB_SIZE
+        ).to(device)
+        
+        checkpoint = torch.load(MODEL_PATH, map_location=device)
+        model.load_state_dict(checkpoint["model"] if "model" in checkpoint else checkpoint)
+        model.eval()
+        return model, device
+    except Exception as e:
+        st.error(f"Error loading AI model: {e}")
+        return None, "cpu"
+
+# ==========================================
+# FUNCTION TO FETCH POSTERS FROM TMDB
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_poster(tmdb_id):
-    # Đường link ảnh mặc định nếu phim không có ảnh hoặc lỗi
     default_poster = "https://via.placeholder.com/500x750?text=No+Poster"
-    
     if pd.isna(tmdb_id):
         return default_poster
         
-    # THAY API KEY CỦA BẠN VÀO ĐÂY
     api_key = "7eba21d33de55ed49b040bbdc2a18e08" 
-    url = f"https://api.themoviedb.org/3/movie/{int(tmdb_id)}?api_key={api_key}&language=vi-VN"
-    
+    url = f"https://api.themoviedb.org/3/movie/{int(tmdb_id)}?api_key={api_key}&language=en-US"
     try:
         response = requests.get(url, timeout=3)
         data = response.json()
         if 'poster_path' in data and data['poster_path']:
-            # Lấy link ảnh chuẩn của TMDb (w500 là kích thước ảnh)
             return f"https://image.tmdb.org/t/p/w500{data['poster_path']}"
-    except Exception as e:
-        pass # Nếu có lỗi mạng hoặc API, sẽ bỏ qua và dùng ảnh mặc định
-        
+    except:
+        pass
     return default_poster
+
 # ==========================================
-# CẤU HÌNH CSS (NETFLIX VIBE)
+# CSS CONFIGURATION (NETFLIX VIBE)
 # ==========================================
 def inject_custom_css():
     st.markdown("""
         <style>
-        /* Đổi màu nền của toàn bộ ứng dụng sang màu tối */
-        .stApp {
-            background-color: #141414;
-            color: #FFFFFF;
-        }
-        /* Style cho nút bấm chính sang màu đỏ Netflix */
+        .stApp { background-color: #141414; color: #FFFFFF; }
         div.stButton > button:first-child {
-            background-color: #E50914;
-            color: #FFFFFF;
-            border: none;
-            border-radius: 4px;
-            padding: 10px 24px;
-            font-weight: bold;
-            width: 100%;
-            transition: all 0.3s ease;
+            background-color: #E50914; color: #FFFFFF; border: none;
+            border-radius: 4px; padding: 10px 24px; font-weight: bold; width: 100%; transition: all 0.3s ease;
         }
-        div.stButton > button:first-child:hover {
-            background-color: #B20710;
-            color: #FFFFFF;
-            border-color: #B20710;
-        }
-        /* Đưa thẻ Tabs ra giữa */
-        .stTabs [data-baseweb="tab-list"] {
-            justify-content: center;
-        }
-        /* Style form đăng nhập */
+        div.stButton > button:first-child:hover { background-color: #B20710; }
+        .stTabs [data-baseweb="tab-list"] { justify-content: center; }
         .login-header {
-            text-align: center;
-            font-size: 3.5rem;
-            font-weight: 900;
-            color: #E50914;
-            margin-bottom: 1rem;
-            letter-spacing: 3px;
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            text-align: center; font-size: 3.5rem; font-weight: 900; color: #E50914;
+            margin-bottom: 1rem; letter-spacing: 3px; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
         }
         </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# XỬ LÝ DATASET
+# DATASET PROCESSING AND ID MAPPING
 # ==========================================
 @st.cache_data
 def load_data():
     try:
-        movies = pd.read_csv('movies.csv')
-        links = pd.read_csv('links.csv')
+        movies = pd.read_csv(MOVIES_PATH)
+        links = pd.read_csv(LINKS_PATH)
         df = pd.merge(movies, links, on='movieId', how='left')
-        return df
+        
+        df['movie_idx'] = df.index + 1 
+        movie2idx = dict(zip(df['movieId'], df['movie_idx']))
+        idx2movie = dict(zip(df['movie_idx'], df['movieId']))
+        
+        return df, movie2idx, idx2movie
     except FileNotFoundError:
-        st.error("Không tìm thấy file movies.csv hoặc links.csv!")
-        return pd.DataFrame()
+        st.error(f"❌ Data not found! Please check the directory: {MOVIES_PATH}")
+        return pd.DataFrame(), {}, {}
 
 # ==========================================
-# GIAO DIỆN UI TƯƠNG TÁC
+# AI INFERENCE FUNCTION
+# ==========================================
+def get_ai_recommendations(history_df, df, movie2idx, idx2movie, model, device, top_k=8):
+    if model is None or history_df.empty:
+        return df.sample(top_k) 
+    
+    history_movie_ids = history_df['movieId'].tolist()
+    seq_idx = [movie2idx[mid] for mid in history_movie_ids if mid in movie2idx]
+    
+    if not seq_idx:
+        return df.sample(top_k)
+        
+    seq_idx = seq_idx[-MAX_LEN:]
+    pad_len = MAX_LEN - len(seq_idx)
+    input_tensor = torch.tensor([0] * pad_len + seq_idx, dtype=torch.long).unsqueeze(0).to(device)
+    
+    dummy_genres = torch.zeros((1, MAX_LEN, NUM_GENRES), dtype=torch.float).to(device)
+    
+    model.eval()
+    with torch.no_grad():
+        predictions = model(input_tensor, dummy_genres)
+        if len(predictions.shape) == 3: 
+            logits = predictions[0, -1, :] 
+        else: 
+            logits = predictions[0]
+            
+    for idx in seq_idx:
+        if idx < len(logits):
+            logits[idx] = -float('inf')
+    logits[0] = -float('inf') 
+            
+    scores, top_indices = torch.topk(logits, top_k)
+    top_indices = top_indices.cpu().numpy().tolist()
+    
+    recommended_movieIds = [idx2movie[idx] for idx in top_indices if idx in idx2movie]
+    recommended_df = df[df['movieId'].isin(recommended_movieIds)].copy()
+    
+    recommended_df['rank'] = pd.Categorical(recommended_df['movieId'], categories=recommended_movieIds, ordered=True)
+    recommended_df = recommended_df.sort_values('rank').drop('rank', axis=1)
+    
+    return recommended_df
+
+# ==========================================
+# UI HELPER: RENDER MOVIE GRID
+# ==========================================
+def render_movie_grid(movies_df, section_key, num_columns=4):
+    """Helper function to render the movie grid for reuse, avoiding code duplication"""
+    cols = st.columns(num_columns)
+    for index, row in movies_df.reset_index().iterrows():
+        with cols[index % num_columns]:
+            with st.container(border=True):
+                st.image(fetch_poster(row['tmdbId']), use_container_width=True)
+                st.markdown(f"<div style='height: 60px; overflow: hidden; margin-top: 5px;'><b>{row['title']}</b></div>", unsafe_allow_html=True)
+                if st.button("▶ Watch Now", key=f"btn_{section_key}_{row['movieId']}", use_container_width=True):
+                    db.log_watch_history(st.session_state['username'], row['movieId'], row['title'])
+                    st.session_state['open_link'] = f"https://www.themoviedb.org/movie/{int(row['tmdbId'])}"
+                    if 'recommended_movies' in st.session_state:
+                        del st.session_state['recommended_movies'] 
+                    st.rerun()
+
+# ==========================================
+# MAIN INTERACTIVE UI
 # ==========================================
 def main():
-    # Cấu hình layout full màn hình
-    st.set_page_config(page_title="Hệ thống Gợi ý Phim", page_icon="🎬", layout="wide")
+    st.set_page_config(page_title="Flow Cine AI", page_icon="🎬", layout="wide")
     inject_custom_css()
     db.init_db()
 
-    # ==========================================
-    # [THÊM MỚI] XỬ LÝ MỞ LINK PHIM TỰ ĐỘNG
-    # ==========================================
+    ai_model, device = load_ml_model()
+
     if 'open_link' in st.session_state:
-        # Dùng JavaScript để ép trình duyệt mở link trong tab mới
         js_code = f"window.open('{st.session_state['open_link']}', '_blank');"
         st.components.v1.html(f"<script>{js_code}</script>", height=0)
-        
-        # Xóa link khỏi bộ nhớ để tránh bị mở lại khi tương tác với các nút khác
         del st.session_state['open_link']
 
     if 'logged_in' not in st.session_state:
         st.session_state['logged_in'] = False
         st.session_state['username'] = ''
 
-    df = load_data()
+    df, movie2idx, idx2movie = load_data()
 
-# ==========================================
-    # MÀN HÌNH 1: LANDING PAGE ĐĂNG NHẬP (Ở GIỮA)
-    # ==========================================
+    # --- LOGIN / REGISTER SCREEN ---
     if not st.session_state['logged_in']:
-        import base64
-        
-        @st.cache_data(show_spinner=False)
-        def get_base64_file(file_path):
-            try:
-                with open(file_path, "rb") as f:
-                    return base64.b64encode(f.read()).decode()
-            except Exception as e:
-                return ""
-
-        # Hãy chắc chắn tên này giống hệt 100% với tên file trong thư mục của bạn
-        bg_image_file = "poster_background.jpg" 
-        bg_base64 = get_base64_file(bg_image_file)
-        logo_base64 = get_base64_file("logo.png")
-
-        # THÊM BÁO LỖI: Báo cho bạn biết nếu gọi sai tên file ảnh
-        if not bg_base64:
-            st.error(f"❌ Không tìm thấy file ảnh: '{bg_image_file}'. Hãy kiểm tra lại tên file hoặc đường dẫn!")
-
-        # 1. CHÈN BACKGROUND ẢNH VÀ STYLE CHO KHUNG FORM CÓ BLUR
-        st.markdown(f"""
-            <style>
-            .stApp {{
-                background-color: transparent !important;
-            }}
-            
-            header {{
-                visibility: hidden;
-            }}
-            .block-container {{
-                padding-top: 1rem !important;
-                padding-bottom: 1rem !important;
-                max-width: 100% !important;
-            }}
-            
-            /* [ĐÃ SỬA] Cấu hình lại kích thước và độ mờ của ảnh nền */
-            #background-image {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100vw;   /* Đưa về chuẩn 100% chiều rộng màn hình */
-                height: 100vh;  /* Đưa về chuẩn 100% chiều cao màn hình */
-                z-index: -100;
-                object-fit: cover;
-                
-                /* Mẹo: Phóng to nhẹ 2% để giấu viền mờ (blur) mà không tạo thanh cuộn */
-                transform: scale(1.02); 
-                
-                /*  blur 2px, tăng sáng một chút cho rõ ảnh */
-                filter: brightness(0.5) blur(2px); 
-                background-color: #141414; 
-            }}
-            
-            [data-testid="column"]:nth-of-type(2) {{
-                background-color: rgba(0, 0, 0, 0.85); 
-                padding: 1.5rem 2.5rem; 
-                border-radius: 12px;
-                box-shadow: 0px 8px 24px rgba(0, 0, 0, 0.9);
-            }}
-            .login-wrapper {{
-                margin-top: 2vh; 
-                text-align: center;
-                margin-bottom: 1rem;
-            }}
-            </style>
-            
-            <img id="background-image" src="data:image/jpeg;base64,{bg_base64}">
-        """, unsafe_allow_html=True)
-        # 2. HIỂN THỊ LOGO TRƯỚC FORM
-        if logo_base64:
-            st.markdown(f"""
-                <div class="login-wrapper">
-                    <img src="data:image/png;base64,{logo_base64}" style="max-width: 220px;">
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="login-wrapper login-header">FLOW CINE</div>', unsafe_allow_html=True)
-        
-        # 3. GIAO DIỆN FORM ĐĂNG NHẬP
+        st.markdown('<div class="login-wrapper login-header">FLOW CINE</div>', unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1.5, 1])
-        
         with col2:
-            st.markdown("<h3 style='text-align: center; color: #fff; margin-bottom: 20px;'>Đăng nhập để trải nghiệm</h3>", unsafe_allow_html=True)
-            
-            tab1, tab2 = st.tabs(["🔑 Đăng nhập", "📝 Đăng ký tài khoản"])
-            
+            tab1, tab2 = st.tabs(["🔑 Login", "📝 Register"])
             with tab1:
-                log_username = st.text_input("Tên đăng nhập", key="log_user")
-                log_password = st.text_input("Mật khẩu", type='password', key="log_pass")
-                if st.button("ĐĂNG NHẬP"):
-                    if db.login_user(log_username, log_password):
+                log_user = st.text_input("Username")
+                log_pass = st.text_input("Password", type='password')
+                if st.button("LOGIN"):
+                    if db.login_user(log_user, log_pass):
                         st.session_state['logged_in'] = True
-                        st.session_state['username'] = log_username
-                        st.rerun() # Lệnh này sẽ load lại trang và thoát khỏi khối 'if not logged_in', tắt video ngay lập tức!
+                        st.session_state['username'] = log_user
+                        st.rerun()
                     else:
-                        st.error("❌ Sai tên đăng nhập hoặc mật khẩu.")
-            
+                        st.error("❌ Invalid credentials.")
             with tab2:
-                reg_username = st.text_input("Tên đăng nhập", key="reg_user")
-                reg_password = st.text_input("Mật khẩu", type='password', key="reg_pass")
-                reg_password_confirm = st.text_input("Xác nhận mật khẩu", type='password', key="reg_pass_conf")
-                if st.button("ĐĂNG KÝ"):
-                    if reg_password != reg_password_confirm:
-                        st.error("❌ Mật khẩu xác nhận không khớp.")
-                    elif db.add_user(reg_username, reg_password):
-                        st.success("✅ Tạo tài khoản thành công! Hãy quay lại tab Đăng nhập.")
-                    else:
-                        st.error("❌ Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.")
+                reg_user = st.text_input("Username", key="reg")
+                reg_pass = st.text_input("Password", type='password', key="regp")
+                if st.button("REGISTER"):
+                    if db.add_user(reg_user, reg_pass): 
+                        # [NEW FEATURE] Auto-login after registration
+                        st.success("✅ Registration successful! Logging in automatically...")
+                        st.session_state['logged_in'] = True
+                        st.session_state['username'] = reg_user
+                        st.session_state['onboarding_complete'] = False
+                        st.rerun()
 
-    # ==========================================
-    # MÀN HÌNH 2: TRANG CHỦ PHIM (KHI ĐÃ ĐĂNG NHẬP)
-    # ==========================================
+    # --- MAIN SCREEN ---
     else:
-        # --- BƯỚC 1: THÊM HÀM CALLBACK CHO NÚT TRANG CHỦ ĐỂ FIX LỖI ---
         def go_home():
-            # Xử lý reset session_state trước khi UI kịp render lại
             st.session_state['search_input'] = ""
             if 'recommended_movies' in st.session_state:
                 del st.session_state['recommended_movies']
-            if 'active_movie' in st.session_state:
-                del st.session_state['active_movie']
 
-        # Thanh sidebar quản lý Profile
+        # Sidebar
         with st.sidebar:
-            st.markdown(f"## 👤 Xin chào,\n### **{st.session_state['username']}**")
-            st.divider()
-            
-            st.markdown("### 🕒 Lịch sử xem phim")
+            st.markdown(f"## 👤 Hello,\n### **{st.session_state['username']}**")
             history_df = db.get_user_history(st.session_state['username'])
-            if history_df.empty:
-                st.info("Chưa có dữ liệu.")
-            else:
-                # Fix cảnh báo Terminal: Đổi use_container_width=True thành width='stretch'
-                st.dataframe(history_df[['movie_title']], hide_index=True, width='stretch')
-            
-            st.divider()
-            if st.button("Đăng xuất", key="logout_btn", width='stretch'):
+            st.dataframe(history_df[['movie_title']] if not history_df.empty else pd.DataFrame(), hide_index=True, width='stretch')
+            if st.button("Logout", width='stretch'):
                 st.session_state['logged_in'] = False
-                st.session_state['username'] = ''
                 st.rerun()
 
-        # Khu vực chính - Duyệt phim
-        import base64
-
-        # Hàm đọc file ảnh sang base64 để nhúng vào CSS
-        def get_base64_image(image_path):
-            try:
-                with open(image_path, "rb") as img_file:
-                    return base64.b64encode(img_file.read()).decode()
-            except Exception as e:
-                # Hiển thị lỗi ra màn hình để dễ debug nếu không tìm thấy file
-                st.error(f"Không thể tải logo: {e}")
-                return ""
-
-        # Lấy dữ liệu ảnh (Sử dụng đường dẫn tương đối, tên file đã đổi ngắn gọn)
-        logo_base64 = get_base64_image("logo.png")
-        
-       # CSS tùy chỉnh để biến nút bấm thành Logo
-        if logo_base64: # Chỉ render CSS khi đã đọc được ảnh
-            st.markdown(f"""
-                <style>
-                /* 1. ẨN TAG CHỮ "go_home_logo" KHI HOVER */
-                div[data-testid="stTooltipContent"] {{
-                    display: none !important;
-                }}
-                
-                /* 2. CHỈNH NÚT THÀNH LOGO VÀ HIỂN THỊ TRỌN VẸN ẢNH */
-                div[data-testid="stTooltipHoverTarget"] button {{
-                    background-image: url('data:image/png;base64,{logo_base64}') !important;
-                    
-                    /* BẮT BUỘC DÙNG contain ĐỂ HIỂN THỊ ĐẦY ĐỦ KHÔNG BỊ CẮT XÉN */
-                    background-size: contain !important; 
-                    
-                    background-repeat: no-repeat !important;
-                    background-position: center !important; /* Đưa logo ra giữa khung nút */
-                    background-color: transparent !important;
-                    border: none !important;
-                    
-                    /* Set cứng kích thước khung nút để chứa ảnh to hơn */
-                    width: 120px !important; 
-                    height: 120px !important; 
-                    
-                    box-shadow: none !important;
-                    padding: 0 !important;
-                    
-                    /* Bỏ scale lớn cũ đi vì dễ gây lỗi vỡ layout */
-                    transform: none !important; 
-                    
-                    /* Đẩy logo xuống một chút cho cân đối với ô tìm kiếm bên cạnh */
-                    margin-top: 5px !important; 
-                }}
-                
-                /* Ẩn chữ "Home" mặc định bên trong nút */
-                div[data-testid="stTooltipHoverTarget"] button p {{
-                    display: none !important;
-                }}
-                
-                /* Hiệu ứng nảy nhẹ lên khi di chuột vào Logo */
-                div[data-testid="stTooltipHoverTarget"] button:hover {{
-                    transform: scale(1.1) !important; 
-                    background-color: transparent !important;
-                    border: none !important;
-                }}
-                </style>
-            """, unsafe_allow_html=True)
-
-        # Chia layout: Cột lớn cho Tiêu đề + Search, Cột nhỏ ở góc phải cho Logo
+        # Header
         col_title, col_logo = st.columns([5, 1.5]) 
-        
         with col_title:
-            st.markdown("<h1>🎬 Khám phá nội dung</h1>", unsafe_allow_html=True)
-            search_query = st.text_input("🔍 Nhập tên phim bạn muốn tìm kiếm...", key="search_input")
-            
+            search_query = st.text_input("🔍 Enter movie name...", key="search_input")
         with col_logo:
-            # Nút bấm ẩn được CSS bắt qua lớp bọc tooltip để thay bằng ảnh
-            st.button("Home", help="go_home_logo", on_click=go_home, key="logo_btn_home")
+            st.button("🏠 Home", on_click=go_home, use_container_width=True)
 
         st.divider()
 
         if not df.empty:
-            # ==========================================
-            # TRẠNG THÁI 1: MÀN HÌNH KẾT QUẢ TÌM KIẾM (LIST VIEW)
-            # ==========================================
+            # --- 1. SEARCH SCREEN ---
             if st.session_state.get('search_input', ''):
-                st.markdown(f"### 🔎 Kết quả tìm kiếm cho: <span style='color:#E50914'>{st.session_state['search_input']}</span>", unsafe_allow_html=True)
+                st.markdown(f"### 🔎 Results for: {st.session_state['search_input']}")
                 results = df[df['title'].str.contains(st.session_state['search_input'], case=False, na=False)].head(15)
-                
-                if results.empty:
-                    st.warning("Không tìm thấy bộ phim nào phù hợp với từ khóa của bạn.")
-                else:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    # Dùng dạng List (Danh sách dọc) cho kết quả tìm kiếm
-                    # Dùng dạng List (Danh sách dọc) cho kết quả tìm kiếm
-                    for index, row in results.iterrows():
-                        with st.container():
-                            # CHIA THÀNH 3 CỘT: Ảnh (1) - Thông tin (3) - Nút (1)
-                            col_img, col_info, col_btn = st.columns([1, 3, 1]) 
-                            
-                            with col_img:
-                                # Gọi hàm lấy ảnh
-                                poster_url = fetch_poster(row['tmdbId'])
-                                st.image(poster_url, use_container_width=True)
-                                
-                            with col_info:
-                                st.markdown(f"**{row['title']}**")
-                                st.caption(f"🏷️ Thể loại: `{row['genres']}`")
-                                
-                            with col_btn:
-                                # Căn giữa nút bấm theo chiều dọc
-                                st.write("") 
-                                button_key = f"watch_search_{row['movieId']}"
-                                if st.button("▶ Xem ngay", key=button_key, use_container_width=True):
-                                    db.log_watch_history(st.session_state['username'], row['movieId'], row['title'])
-                                    if pd.notna(row['tmdbId']):
-                                        st.session_state['open_link'] = f"https://www.themoviedb.org/movie/{int(row['tmdbId'])}"
-                                    else:
-                                        st.toast("❌ Không có link nguồn cho phim này.", icon="⚠️")
-                                    st.rerun()
-                        st.divider()
-            # ==========================================
-            # TRẠNG THÁI 2: MÀN HÌNH TRANG CHỦ / GỢI Ý (GRID VIEW)
-            # ==========================================
+                for index, row in results.iterrows():
+                    col1, col2, col3 = st.columns([1,3,1])
+                    with col1: st.image(fetch_poster(row['tmdbId']))
+                    with col2: st.write(row['title'])
+                    with col3:
+                        if st.button("Watch Now", key=f"src_{row['movieId']}", use_container_width=True):
+                            db.log_watch_history(st.session_state['username'], row['movieId'], row['title'])
+                            st.session_state['open_link'] = f"https://www.themoviedb.org/movie/{int(row['tmdbId'])}"
+                            st.rerun()
+            
+            # --- 2. HOME SCREEN ---
             else:
-                # ---------------------------------------------------------
-                # [TÍNH NĂNG MỚI] ONBOARDING KIỂU TINDER CHO NGƯỜI DÙNG MỚI
-                # ---------------------------------------------------------
-                # Khởi tạo các biến trạng thái cho luồng Tinder
-                if 'onboarding_complete' not in st.session_state:
-                    st.session_state['onboarding_complete'] = False
-                if 'onboarding_index' not in st.session_state:
-                    st.session_state['onboarding_index'] = 0
-                if 'liked_genres' not in st.session_state:
-                    st.session_state['liked_genres'] = set()
-                if 'onboarding_movies' not in st.session_state:
-                    # Lấy ngẫu nhiên 5 phim có poster để người dùng "quẹt"
-                    st.session_state['onboarding_movies'] = df.sample(5).to_dict('records')
-
-                # NẾU CHƯA CÓ LỊCH SỬ XEM VÀ CHƯA HOÀN THÀNH QUẸT TINDER
-                if history_df.empty and not st.session_state['onboarding_complete']:
-                    st.markdown("<h2 style='text-align: center; color: #E50914;'>❤️ Khám phá gu phim của bạn</h2>", unsafe_allow_html=True)
-                    st.markdown("<p style='text-align: center; margin-bottom: 30px;'>Hãy cho chúng tôi biết bạn thích bộ phim nào dưới đây để nhận gợi ý chuẩn nhất nhé!</p>", unsafe_allow_html=True)
-
-                    current_idx = st.session_state['onboarding_index']
+                # Fetch genre preferences from Database
+                saved_genres = db.get_user_genres(st.session_state['username'])
+                
+                # [ONBOARDING FLOW FOR BRAND NEW USERS] (No watch history + No saved genres)
+                if history_df.empty and not saved_genres:
+                    st.markdown("<h2 style='text-align: center; color: #E50914;'>Welcome to Flow Cine! 🍿</h2>", unsafe_allow_html=True)
+                    st.markdown("<h4 style='text-align: center;'>To help our AI make the best recommendations, please select your favorite movie genres:</h4><br>", unsafe_allow_html=True)
                     
-                    if current_idx < len(st.session_state['onboarding_movies']):
-                        current_movie = st.session_state['onboarding_movies'][current_idx]
-                        
-                        # Chia cột để tạo giao diện Card (thẻ) ở giữa màn hình giống Tinder
-                        _, col_card, _ = st.columns([1.5, 2, 1.5])
-                        
-                        with col_card:
-                            with st.container(border=True):
-                                # Ảnh phim
-                                poster_url = fetch_poster(current_movie['tmdbId'])
-                                st.image(poster_url, use_container_width=True)
-                                
-                                # Thông tin phim
-                                st.markdown(f"<h3 style='text-align: center; margin-top: 10px;'>{current_movie['title']}</h3>", unsafe_allow_html=True)
-                                st.caption(f"<div style='text-align: center;'>🎭 {current_movie['genres']}</div>", unsafe_allow_html=True)
-                                st.write("") # Đệm
-                                
-                                # Hai nút Quẹt Trái / Quẹt Phải
-                                btn_col1, btn_col2 = st.columns(2)
-                                with btn_col1:
-                                    if st.button("❌ Bỏ qua", use_container_width=True, key=f"skip_{current_idx}"):
-                                        st.session_state['onboarding_index'] += 1
-                                        st.rerun()
-                                with btn_col2:
-                                    if st.button("❤️ Thích", use_container_width=True, key=f"like_{current_idx}"):
-                                        # Bóc tách thể loại của phim này và lưu vào bộ nhớ
-                                        genres_list = current_movie['genres'].split('|')
-                                        for g in genres_list:
-                                            # Bỏ qua các thể loại rác nếu có
-                                            if g != "(no genres listed)":
-                                                st.session_state['liked_genres'].add(g)
-                                        
-                                        st.session_state['onboarding_index'] += 1
-                                        st.rerun()
-                                        
-                                # Hiển thị tiến trình (VD: 1/5)
-                                st.progress((current_idx) / len(st.session_state['onboarding_movies']))
-                                st.caption(f"<div style='text-align: center;'>Phim {current_idx + 1} / {len(st.session_state['onboarding_movies'])}</div>", unsafe_allow_html=True)
-                    else:
-                        # Khi đã duyệt hết 5 phim, đánh dấu hoàn thành và tải lại trang
-                        st.session_state['onboarding_complete'] = True
-                        st.rerun()
-
-                # ---------------------------------------------------------
-                # HIỂN THỊ LƯỚI PHIM GỢI Ý (Khi đã có lịch sử HOẶC đã quẹt xong)
-                # ---------------------------------------------------------
-                else:
-                    st.markdown("### ✨ Gợi Ý Dành Riêng Cho Bạn")
-                    st.caption("🍿 Dựa trên gu điện ảnh của bạn, đây là những siêu phẩm bạn không nên bỏ lỡ!")
-                    
-                    if 'recommended_movies' not in st.session_state:
-                        # NẾU USER LÀ NGƯỜI MỚI VỪA QUẸT TINDER XONG
-                        if history_df.empty and st.session_state['onboarding_complete']:
-                            if len(st.session_state['liked_genres']) > 0:
-                                # Tạo chuỗi Regex từ các thể loại đã thích (VD: 'Action|Romance|Comedy')
-                                genre_pattern = '|'.join(list(st.session_state['liked_genres']))
-                                # Lọc các phim có chứa ít nhất 1 thể loại người dùng đã "Thích"
-                                filtered_df = df[df['genres'].str.contains(genre_pattern, case=False, na=False)]
-                                
-                                # Nếu kho phim lọc được đủ nhiều, lấy 16 phim, nếu ít quá thì lấy tất cả
-                                sample_size = min(16, len(filtered_df))
-                                st.session_state['recommended_movies'] = filtered_df.sample(sample_size)
+                    _, col_center, _ = st.columns([1, 2, 1])
+                    with col_center:
+                        selected_genres = st.multiselect("Select genres (Multiple choices allowed):", ALL_GENRES)
+                        st.write("")
+                        if st.button("Start exploring with AI", use_container_width=True):
+                            if not selected_genres:
+                                st.warning("⚠️ Please select at least 1 genre to continue!")
                             else:
-                                # Nếu người dùng lỡ bấm "Bỏ qua" cả 5 phim, fallback về random
-                                st.session_state['recommended_movies'] = df.sample(16)
+                                # SAVE TO DATABASE PERMANENTLY
+                                db.update_user_genres(st.session_state['username'], selected_genres)
+                                st.rerun() # Reload page
                                 
-                        # NẾU USER CŨ ĐÃ CÓ LỊCH SỬ XEM TỪ TRƯỚC (Logic mặc định)
-                        else:
-                            st.session_state['recommended_movies'] = df.sample(16) 
+                # [MOVIE ROWS DISPLAY FLOW]
+                else:
+                    # ROW 1: RECOMMENDATIONS
+                    if history_df.empty:
+                        # User selected genres but hasn't watched any movies (Cold-start)
+                        st.markdown("### 🎯 Movies in your favorite genres")
+                        st.caption("Based on your profile, we recommend the following blockbusters:")
+                        
+                        # [BUG FIX]: Save movies to session_state to prevent randomizing on button click
+                        if 'cold_start_movies' not in st.session_state:
+                            pattern = '|'.join(saved_genres)
+                            genre_movies = df[df['genres'].str.contains(pattern, case=False, na=False)]
+                            st.session_state['cold_start_movies'] = genre_movies.sample(min(8, len(genre_movies)))
                             
-                    results = st.session_state['recommended_movies']
+                        render_movie_grid(st.session_state['cold_start_movies'], "cold_start", num_columns=4)
+                        
+                    else:
+                        # User clicked a movie -> Activate Personalized SASRec Model
+                        st.markdown("### ✨ For You")
+                        st.caption("🤖 Our AI analyzed your watch history and predicts you will like:")
+                        
+                        if 'recommended_movies' not in st.session_state:
+                            with st.spinner('AI is calculating your preference matrix...'):
+                                st.session_state['recommended_movies'] = get_ai_recommendations(
+                                    history_df=history_df, df=df, movie2idx=movie2idx, idx2movie=idx2movie, 
+                                    model=ai_model, device=device, top_k=8
+                                )
+                        render_movie_grid(st.session_state['recommended_movies'], "ai_recs", num_columns=4)
 
-                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.divider()
                     
-                    # Dùng dạng Grid (Lưới 4 cột) cho trang chủ
-                    cols = st.columns(4)
-                    for index, row in results.reset_index().iterrows():
-                        with cols[index % 4]:
-                            # Tạo Card bọc mỗi phim
-                            with st.container(border=True):
-                                poster_url = fetch_poster(row['tmdbId'])
-                                st.image(poster_url, use_container_width=True)
-                                
-                                st.markdown(f"<div style='height: 60px; overflow: hidden; margin-bottom: 5px; margin-top: 10px;'><b>{row['title']}</b></div>", unsafe_allow_html=True)
-                                st.caption(f"🎭 {row['genres']}")
-                                
-                                st.write("")
-                                button_key = f"watch_home_{row['movieId']}"
-                                
-                                if st.button("▶ Xem Phim", key=button_key, use_container_width=True):
-                                    db.log_watch_history(st.session_state['username'], row['movieId'], row['title'])
-                                    if pd.notna(row['tmdbId']):
-                                        st.session_state['open_link'] = f"https://www.themoviedb.org/movie/{int(row['tmdbId'])}"
-                                    else:
-                                        st.toast("❌ Không có link nguồn cho phim này.", icon="⚠️")
-                                    st.rerun()
+                    # ROW 2: MOST WATCHED
+                    st.markdown("### 🏆 Most watched movies of all time")
+                    # [BUG FIX]: Save state
+                    if 'most_watched_movies' not in st.session_state:
+                        st.session_state['most_watched_movies'] = df.sample(4)
+                    render_movie_grid(st.session_state['most_watched_movies'], "most_watched", num_columns=4)
+
+                    st.divider()
+
+                    # ROW 3: TRENDING
+                    st.markdown("### 🔥 Trending this week")
+                    # [BUG FIX]: Save state
+                    if 'trending_movies' not in st.session_state:
+                        st.session_state['trending_movies'] = df.sample(4)
+                    render_movie_grid(st.session_state['trending_movies'], "trending", num_columns=4)
+
 if __name__ == '__main__':
     main()
